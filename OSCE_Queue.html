@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Simple Queue Caller</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    :root {
+      --accent: #2b8fbd;
+      --bg-dark: #111;
+      --bg-panel: #fafafa;
+      --border: #e5e5e5;
+      --text: #222;
+      --text-inv: #fff;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; }
+    body { display: flex; font-family: system-ui, Arial, sans-serif; color: var(--text); }
+    .left {
+      width: 380px; max-width: 40vw;
+      padding: 20px; border-right: 1px solid var(--border); background: #fff;
+      display: flex; flex-direction: column; gap: 10px;
+    }
+    h3 { margin: 0 0 6px; }
+    .row { display: flex; gap: 8px; }
+    input, button, label { font-size: 14px; }
+    input, button, textarea, select {
+      padding: 10px; border: 1px solid var(--border); border-radius: 8px;
+    }
+    button.primary { background: var(--accent); color: var(--text-inv); border: none; }
+    button.danger  { background: #b72b2b; color: var(--text-inv); border: none; }
+    button:disabled { opacity: 0.6; cursor: not-allowed; }
+    .queueList {
+      flex: 1; overflow: auto; border: 1px solid var(--border); background: var(--bg-panel);
+      padding: 8px; border-radius: 10px;
+    }
+    .item { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center;
+            padding: 6px 4px; border-bottom: 1px dashed #eaeaea; }
+    .display {
+      flex: 1; display: flex; align-items: center; justify-content: center;
+      background: var(--bg-dark); color: var(--text-inv); position: relative;
+    }
+    #callBox {
+      font-size: clamp(28px, 8vw, 120px); font-weight: 800; text-align: center; line-height: 1.1;
+      padding: 2vh 3vw;
+    }
+    .flash { animation: flashBg 1s ease-in-out 0s 3; }
+    @keyframes flashBg {
+      0% { transform: scale(1);   text-shadow: none; }
+      50%{ transform: scale(1.06); text-shadow: 0 0 24px rgba(255,255,255,0.6); }
+      100%{ transform: scale(1);   text-shadow: none; }
+    }
+    .topRight {
+      position: absolute; top: 14px; right: 14px; display: flex; gap: 8px;
+    }
+    .hint { font-size: 12px; color: #666; }
+    .footer { font-size: 12px; color: #666; }
+    .badge { padding: 4px 8px; border-radius: 999px; background: #eee; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <div class="left" role="region" aria-label="Queue controls">
+    <h3>Queue Manager</h3>
+
+    <label for="nameInput" class="hint">
+      Enter a name or **privacy-friendly** label (e.g., <strong>“B.B. – RM3”</strong>).
+    </label>
+    <div class="row">
+      <input id="nameInput" placeholder="Initials, ticket #, or room…" autocomplete="off" />
+      <button id="addBtn" class="primary" title="Add to queue">Add</button>
+    </div>
+
+    <div class="row">
+      <button id="callBtn" class="primary" style="flex:1;" title="Call next in queue">Call Next</button>
+      <button id="clearBtn" class="danger" title="Clear all">Clear</button>
+    </div>
+
+    <div class="row" style="align-items:center;">
+      <label><input type="checkbox" id="soundToggle" checked /> Sound on</label>
+      <span class="badge" id="countBadge" aria-live="polite">0 in queue</span>
+      <button id="fullscreenBtn" title="Toggle fullscreen">Fullscreen</button>
+    </div>
+
+    <div id="queueList" class="queueList" aria-live="polite" aria-label="Current queue"></div>
+
+    <div class="footer">
+      Tip: Press <strong>Enter</strong> after typing to add.  
+      Keep displays in staff-controlled areas; prefer initials/IDs over full names.
+    </div>
+  </div>
+
+  <div class="display" role="region" aria-label="Now serving display">
+    <div class="topRight">
+      <span class="badge" id="statusBadge">Waiting…</span>
+    </div>
+    <div id="callBox">Waiting…</div>
+  </div>
+
+<script>
+  // ---------- State & persistence ----------
+  const LS_KEY = 'simpleQueue_v1';
+  const state = JSON.parse(localStorage.getItem(LS_KEY) || '{"queue":[],"sound":true}');
+  if (!Array.isArray(state.queue)) state.queue = [];
+  if (typeof state.sound !== 'boolean') state.sound = true;
+
+  const nameInput     = document.getElementById('nameInput');
+  const addBtn        = document.getElementById('addBtn');
+  const callBtn       = document.getElementById('callBtn');
+  const clearBtn      = document.getElementById('clearBtn');
+  const queueList     = document.getElementById('queueList');
+  const callBox       = document.getElementById('callBox');
+  const soundToggle   = document.getElementById('soundToggle');
+  const countBadge    = document.getElementById('countBadge');
+  const statusBadge   = document.getElementById('statusBadge');
+  const fullscreenBtn = document.getElementById('fullscreenBtn');
+
+  soundToggle.checked = state.sound;
+
+  function save() {
+    localStorage.setItem(LS_KEY, JSON.stringify(state));
+  }
+
+  // ---------- Helpers ----------
+  function escapeHtml(s){
+    return String(s).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+  }
+  function renderQueue(){
+    queueList.innerHTML = '';
+    state.queue.forEach((n,i)=>{
+      const row = document.createElement('div'); row.className = 'item';
+      row.innerHTML = `
+        <div>${i+1}. ${escapeHtml(n)}</div>
+        <div class="row">
+          <button title="Move up"    ${i===0?'disabled':''} onclick="moveItem(${i},-1)">▲</button>
+          <button title="Move down"  ${i===state.queue.length-1?'disabled':''} onclick="moveItem(${i},1)">▼</button>
+          <button title="Remove" class="danger" onclick="removeAt(${i})">Remove</button>
+        </div>`;
+      queueList.appendChild(row);
+    });
+    countBadge.textContent = `${state.queue.length} in queue`;
+    addBtn.disabled = false;
+    callBtn.disabled = state.queue.length === 0;
+  }
+  function setStatus(txt){ statusBadge.textContent = txt; }
+
+  // ---------- Queue actions ----------
+  window.removeAt = function(i){
+    state.queue.splice(i,1); save(); renderQueue();
+  }
+  window.moveItem = function(i, dir){
+    const j = i + dir;
+    if (j < 0 || j >= state.queue.length) return;
+    const [item] = state.queue.splice(i,1);
+    state.queue.splice(j,0,item); save(); renderQueue();
+  }
+
+  function addName(){
+    const v = nameInput.value.trim();
+    if(!v) return alert('Type a name, initials, ticket, or room number.');
+    state.queue.push(v); save(); renderQueue();
+    nameInput.value = ''; nameInput.focus();
+  }
+
+  // ---------- Audio (simple beep) ----------
+  let audioCtx;
+  function beep(ms=350, freq=880){
+    if (!state.sound) return;
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const o = audioCtx.createOscillator();
+    const g = audioCtx.createGain();
+    o.type = 'sine'; o.frequency.value = freq;
+    g.gain.value = 0.001; // start quiet to avoid click
+    o.connect(g).connect(audioCtx.destination);
+    o.start();
+    // quick envelope
+    g.gain.linearRampToValueAtTime(0.2, audioCtx.currentTime + 0.02);
+    g.gain.linearRampToValueAtTime(0.2, audioCtx.currentTime + (ms/1000 - 0.05));
+    g.gain.linearRampToValueAtTime(0.0001, audioCtx.currentTime + (ms/1000));
+    o.stop(audioCtx.currentTime + (ms/1000));
+  }
+
+  function showAndFlash(text){
+    callBox.textContent = text;
+    callBox.classList.remove('flash');
+    void callBox.offsetWidth; // restart animation
+    callBox.classList.add('flash');
+    setStatus('Now serving');
+    beep(350, 880);
+    setTimeout(()=>beep(350, 660), 420); // two-tone chime
+  }
+
+  // ---------- Buttons & keys ----------
+  addBtn.addEventListener('click', addName);
+  nameInput.addEventListener('keydown', e=>{
+    if(e.key==='Enter') addName();
+  });
+
+  callBtn.addEventListener('click', ()=>{
+    if(state.queue.length===0){ callBox.textContent = 'No one in queue'; setStatus('Waiting…'); return; }
+    const next = state.queue.shift(); save(); renderQueue();
+    showAndFlash(next);
+  });
+
+  clearBtn.addEventListener('click', ()=>{
+    if(confirm('Clear the entire queue?')){
+      state.queue = []; save(); renderQueue();
+      callBox.textContent = 'Waiting…'; setStatus('Waiting…');
+    }
+  });
+
+  soundToggle.addEventListener('change', ()=>{
+    state.sound = soundToggle.checked; save();
+  });
+
+  fullscreenBtn.addEventListener('click', async ()=>{
+    if (!document.fullscreenElement) {
+      await document.documentElement.requestFullscreen().catch(()=>{});
+    } else {
+      await document.exitFullscreen().catch(()=>{});
+    }
+  });
+
+  // Initial render
+  renderQueue();
+  setStatus('Waiting…');
+</script>
+</body>
+</html>
